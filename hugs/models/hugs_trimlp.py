@@ -10,6 +10,8 @@ from loguru import logger
 import torch.nn.functional as F
 from hugs.models.hugs_wo_trimlp import smpl_lbsmap_top_k, smpl_lbsweight_top_k
 
+import rerun as rr
+
 from hugs.utils.general import (
     inverse_sigmoid, 
     get_expon_lr_func, 
@@ -414,7 +416,6 @@ class HUGS_TRIMLP:
         gs_scales = geometry_out['scales'] * self.scaling_multiplier
         
         gs_xyz = self.get_xyz + xyz_offsets
-        
         gs_rotmat = rotation_6d_to_matrix(gs_rot6d)
         gs_rotq = matrix_to_quaternion(gs_rotmat)
 
@@ -474,6 +475,11 @@ class HUGS_TRIMLP:
             deformed_xyz = deformed_xyz.squeeze(0)
             lbs_T = lbs_T.squeeze(0)
 
+            a = deformed_xyz.detach().clone()
+
+
+
+
             with torch.no_grad():
                 # gt lbs is needed for lbs regularization loss
                 # predicted lbs should be close to gt lbs
@@ -487,6 +493,14 @@ class HUGS_TRIMLP:
                     pass
                 else:
                     logger.warning(f"GT LBS weights should sum to 1, but it is: {gt_lbs_weights.sum(-1).mean().item()}")
+                
+                b, _, _, _, _ = lbs_extra(
+                A_vitruvian2pose[None], gs_xyz[None], posedirs, gt_lbs_weights, 
+                    smpl_output.full_pose, disable_posedirs=self.disable_posedirs, pose2rot=True
+                )
+                b = b.squeeze(0).detach().clone()
+
+
         else:
             curr_offsets = (smpl_output.shape_offsets + smpl_output.pose_offsets)[0]
             T_t2pose = smpl_output.T[0]
@@ -553,6 +567,8 @@ class HUGS_TRIMLP:
             'lbs_weights': lbs_weights,
             'posedirs': posedirs,
             'gt_lbs_weights': gt_lbs_weights,
+            "a":a,
+            "b":b
         }
 
     def oneupSHdegree(self):

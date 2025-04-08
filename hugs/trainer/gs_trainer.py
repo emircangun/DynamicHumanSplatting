@@ -33,7 +33,7 @@ from hugs.utils.vis import save_ply
 from hugs.utils.image import psnr, save_image
 from hugs.utils.general import RandomIndexIterator, load_human_ckpt, save_images, create_video
 
-
+import rerun as rr
 def get_train_dataset(cfg):
     if cfg.dataset.name == 'neuman':
         logger.info(f'Loading NeuMan dataset {cfg.dataset.seq}-train')
@@ -124,7 +124,7 @@ class GaussianTrainer():
             
         # setup the optimizers
         if self.human_gs:
-            self.human_gs.setup_optimizer(cfg=cfg.human.lr)
+            self.human_gs.setup_optimizer(cfg=cfg.human.lr) 
             logger.info(self.human_gs)
             if cfg.human.ckpt:
                 # load_human_ckpt(self.human_gs, cfg.human.ckpt)
@@ -215,7 +215,14 @@ class GaussianTrainer():
                 pose_type=self.cfg.human.canon_pose_type
             )
 
+
     def train(self):
+        
+        rr.init("training_222", recording_id="v0.1")
+        rr.connect_tcp("0.0.0.0:9876")
+        rr.log(f"world/xyz", rr.Arrows3D(vectors=[[1, 0, 0], [0, 2, 0], [0, 0, 3]],
+                                                            colors=[[255, 0, 0], [0, 255, 0], [0, 0, 255]]))
+
         if self.human_gs:
             self.human_gs.train()
 
@@ -233,7 +240,7 @@ class GaussianTrainer():
                 self.human_gs.update_learning_rate(t_iter)
         
             rnd_idx = next(rand_idx_iter)
-            data = self.train_dataset[rnd_idx]
+            data = self.train_dataset[rand_idx_iter]
             
             human_gs_out, scene_gs_out = None, None
             
@@ -244,10 +251,23 @@ class GaussianTrainer():
                     is_train=True,
                     ext_tfs=None,
                 )
+
+                if rnd_idx in [0, 10, 56]:
+                    rr.set_time_seconds("frame", t_iter)
+                    rr.log(f"world/{rnd_idx}_human_gs_out", rr.Points3D(positions=human_gs_out["xyz"].detach().cpu().numpy()))
+                    rr.log(f"world/{rnd_idx}_human_gs_canon_human", rr.Points3D(positions=human_gs_out["xyz_canon"].detach().cpu().numpy()))
+                    rr.log(f"world/{rnd_idx}_human_gs_pred_lbs", rr.Points3D(positions=human_gs_out["a"].detach().cpu().numpy()))
+                    rr.log(f"world/{rnd_idx}_human_gs_gt_lbs", rr.Points3D(positions=human_gs_out["b"].detach().cpu().numpy()))
+
+
             
             if self.scene_gs:
                 if t_iter >= self.cfg.scene.opt_start_iter:
                     scene_gs_out = self.scene_gs.forward()
+                    # if rnd_idx == 0:
+                    # if t_iter % 100 == 0:
+                    #     rr.set_time_seconds("frame", t_iter)
+                    #     rr.log(f"world/scene_gs_out_t_iter", rr.Points3D(positions=scene_gs_out["xyz"].detach().cpu().numpy(), colors=scene_gs_out["shs"][:, 0, :].detach().cpu().numpy(), radii=0.1 + human_gs_out["scales"].mean(axis=1) * 2,))
                 else:
                     render_mode = 'human'
             
@@ -304,14 +324,17 @@ class GaussianTrainer():
             if t_iter == self.cfg.train.num_steps:
                 pbar.close()
 
-            if t_iter % 1000 == 0:
+            if t_iter % 10000 == 0:
                 with torch.no_grad():
-                    pred_img = loss_extras['pred_img']
-                    gt_img = loss_extras['gt_img']
+                    pred_img = loss_extras['pred_img'].detach().cpu()
+                    gt_img = loss_extras['gt_img'].detach().cpu()
                     log_pred_img = (pred_img.cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
                     log_gt_img = (gt_img.cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
                     log_img = np.concatenate([log_gt_img, log_pred_img], axis=1)
                     save_images(log_img, f'{self.cfg.logdir}/train/{t_iter:06d}.png')
+
+                    del pred_img, gt_img, log_pred_img, log_gt_img, log_img
+                    torch.cuda.empty_cache()
             
             if t_iter >= self.cfg.scene.opt_start_iter:
                 if (t_iter - self.cfg.scene.opt_start_iter) < self.cfg.scene.densify_until_iter and self.cfg.mode in ['scene', 'human_scene']:
@@ -359,25 +382,32 @@ class GaussianTrainer():
             if t_iter % self.cfg.train.val_interval == 0 and t_iter > 0:
                 self.validate(t_iter)
             
-            if t_iter == 0:
-                if self.scene_gs:
-                    self.scene_gs.save_ply(f'{self.cfg.logdir}/meshes/scene_{t_iter:06d}_splat.ply')
-                if self.human_gs:
-                    save_ply(human_gs_out, f'{self.cfg.logdir}/meshes/human_{t_iter:06d}_splat.ply')
+            if t_iter % 10000 == 0:
+                # if self.scene_gs:
+                #     self.scene_gs.save_ply(f'{self.cfg.logdir}/meshes/scene_{t_iter:06d}_splat.ply')
+                    
+                # if self.human_gs:
+                #     save_ply(human_gs_out, f'{self.cfg.logdir}/meshes/human_{t_iter:06d}_splat.ply')
 
                 if self.cfg.mode in ['human', 'human_scene']:
                     self.render_canonical(t_iter, nframes=self.cfg.human.canon_nframes)
-                
-            if t_iter % self.cfg.train.anim_interval == 0 and t_iter > 0 and self.cfg.train.anim_interval > 0:
-                if self.human_gs:
-                    save_ply(human_gs_out, f'{self.cfg.logdir}/meshes/human_{t_iter:06d}_splat.ply')
+
                 if self.anim_dataset is not None:
                     self.animate(t_iter)
                     
                 if self.cfg.mode in ['human', 'human_scene']:
                     self.render_canonical(t_iter, nframes=self.cfg.human.canon_nframes)
+                
+            # if t_iter % 1000 == 0 and t_iter > 0 and self.cfg.train.anim_interval > 0:
+            #     if self.human_gs:
+            #         save_ply(human_gs_out, f'{self.cfg.logdir}/meshes/human_{t_iter:06d}_splat.ply')
+            #     if self.anim_dataset is not None:
+            #         self.animate(t_iter)
+                    
+            #     if self.cfg.mode in ['human', 'human_scene']:
+            #         self.render_canonical(t_iter, nframes=self.cfg.human.canon_nframes)
             
-            if t_iter % 1000 == 0 and t_iter > 0:
+            if t_iter % 10000 == 0 and t_iter > 0:
                 if self.human_gs: self.human_gs.oneupSHdegree()
                 if self.scene_gs: self.scene_gs.oneupSHdegree()
                 
